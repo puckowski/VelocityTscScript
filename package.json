@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "tsc": "tsc index2.ts",
+    "tsc": "tsc typescript\\index2.ts",
     "minify": "node minify.js"
   },
   "devDependencies": {
