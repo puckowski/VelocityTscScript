@@ -1,4 +1,4 @@
-const { transpile } = require("./index"); // or "./index.js" if you prefer
+const { transpile } = require("../index"); // or "./index.js" if you prefer
 
 // assume `code` is a string defined somewhere above:
 // const code = "...your TS-like source...";
@@ -54,7 +54,9 @@ for (let i = 0; i < arr.length; i = i + 1) {
 }
 for(let i of arr) {
     console.log(i);
-}`;
+}
+    
+function identity<T>(value: T): number { return value; }\nlet x = identity(1); x = 's';`;
 
 const start = performance.now();
 try {

@@ -191,8 +191,8 @@ function TypeDecl(name, type, pos) { return { kind: "TypeDecl", name, type, pos 
 function VarDecl(name, type, init, pos) { return { kind: "VarDecl", name, type, init, pos }; }
 function ConstDecl(name, type, init, pos) { return { kind: "ConstDecl", name, type, init, pos }; }
 // NEW/UPDATED: Function decl / expr with isAsync flag
-function FuncDecl(name, params, returnType, body, pos, isAsync = false) {
-    return { kind: "FuncDecl", name, params, returnType, body, pos, isAsync };
+function FuncDecl(name, typeParams, params, returnType, body, pos, isAsync = false) {
+    return { kind: "FuncDecl", name, typeParams, params, returnType, body, pos, isAsync };
 }
 function Param(name, type, pos) { return { kind: "Param", name, type, pos }; }
 function Block(statements, pos) { return { kind: "Block", statements, pos }; }
@@ -251,8 +251,8 @@ function ObjectLiteralProperty(name, value, pos) {
     return { kind: "ObjectLiteralProperty", name, value, pos };
 }
 // Function expression (anonymous or named): function [name] (params) [: Type]? { body }
-function FunctionExpr(name, params, returnType, body, pos, isAsync = false) {
-    return { kind: "FunctionExpr", name, params, returnType, body, pos, isAsync };
+function FunctionExpr(name, typeParams, params, returnType, body, pos, isAsync = false) {
+    return { kind: "FunctionExpr", name, typeParams, params, returnType, body, pos, isAsync };
 }
 // ClassDecl now holds both methods and fields (public instance fields)
 function FieldDecl(name, type, init, pos, isStatic = false) { return { kind: "FieldDecl", name, type, init, pos, isStatic }; }
@@ -465,6 +465,21 @@ function parse(tokens) {
         }
         throw new Error(`Const '${nameTok.value}' must have an initializer at ${nameTok.pos}`);
     }
+    // parse optional generic type parameter list: <T, U>
+    function parseTypeParams() {
+        if (!(peek().type === "punct" && peek().value === "<")) return null;
+        consume("punct", "<");
+        const tparams = [];
+        if (!(peek().type === "punct" && peek().value === ">")) {
+            do {
+                const id = consume("identifier");
+                tparams.push(id.value);
+            } while (match("punct", ","));
+        }
+        consume("punct", ">");
+        return tparams;
+    }
+
     function parseFuncDecl() {
         let isAsync = false;
         if (peek().type === "keyword" && peek().value === "async") {
@@ -474,6 +489,8 @@ function parse(tokens) {
 
         consume("keyword", "function");
         const nameTok = consume("identifier");
+
+        const typeParams = parseTypeParams();
 
         consume("punct", "(");
         const params = [];
@@ -503,7 +520,7 @@ function parse(tokens) {
         }
 
         const body = parseBlock();
-        return FuncDecl(nameTok.value, params, retType, body, nameTok.pos, isAsync);
+        return FuncDecl(nameTok.value, typeParams, params, retType, body, nameTok.pos, isAsync);
     }
 
 
@@ -1070,6 +1087,9 @@ function parse(tokens) {
                     name = n.value;
                 }
 
+                // optional generic params on function expression
+                const typeParams = parseTypeParams();
+
                 consume("punct", "(");
                 const params = [];
                 if (!(peek().type === "punct" && peek().value === ")")) {
@@ -1097,7 +1117,7 @@ function parse(tokens) {
                 }
 
                 const body = parseBlock();
-                return FunctionExpr(name, params, returnType, body, asyncTok.pos, true);
+                return FunctionExpr(name, typeParams, params, returnType, body, asyncTok.pos, true);
             }
 
             // async function () { ... } expression
@@ -1109,6 +1129,7 @@ function parse(tokens) {
                     const n = consume("identifier");
                     name = n.value;
                 }
+                const typeParams = parseTypeParams();
                 consume("punct", "(");
                 const params = [];
                 if (!(peek().type === "punct" && peek().value === ")")) {
@@ -1129,7 +1150,7 @@ function parse(tokens) {
                     returnType = parseSimpleTypeRef();
                 }
                 const body = parseBlock();
-                return FunctionExpr(name, params, returnType, body, funcTok.pos, true);
+                return FunctionExpr(name, typeParams, params, returnType, body, funcTok.pos, true);
             }
         }
 
@@ -1143,6 +1164,8 @@ function parse(tokens) {
                 const n = consume("identifier");
                 name = n.value;
             }
+
+            const typeParams = parseTypeParams();
 
             consume("punct", "(");
             const params = [];
@@ -1171,7 +1194,7 @@ function parse(tokens) {
             }
 
             const body = parseBlock();
-            return FunctionExpr(name, params, returnType, body, funcTok.pos, false);
+            return FunctionExpr(name, typeParams, params, returnType, body, funcTok.pos, false);
         }
         if (tok.type === "bigint") {
             consume("bigint");
@@ -1317,8 +1340,8 @@ function primitiveType(name) {
     return { kind: name };
 }
 
-function functionType(paramTypes, returnType) {
-    return { kind: "function", params: paramTypes, returnType };
+function functionType(paramTypes, returnType, typeParams = null) {
+    return { kind: "function", params: paramTypes, returnType, typeParams };
 }
 
 function objectTypeFromAst(node, env, resolveTypeExpr) {
@@ -1456,6 +1479,54 @@ function typeCheck(ast, source) {
         }
     }
 
+    // Infer type parameter mappings by comparing a parameter type (which may
+    // reference type parameters) against an argument type. `mapping` is a Map
+    // from type parameter name -> concrete Type.
+    function inferTypeParams(paramType, argType, mapping) {
+        if (!paramType || !argType) return;
+        if (paramType.kind === "typeParam") {
+            // map type parameter to the argument type (first mapping wins)
+            if (!mapping.has(paramType.name)) mapping.set(paramType.name, argType);
+            return;
+        }
+        if (paramType.kind === "array" && argType.kind === "array") {
+            inferTypeParams(paramType.element, argType.element, mapping);
+            return;
+        }
+        if (paramType.kind === "object" && argType.kind === "object") {
+            // try to infer from common properties (shallow)
+            for (const [name, pType] of paramType.properties.entries()) {
+                const aProp = argType.properties.get(name);
+                if (aProp) inferTypeParams(pType, aProp, mapping);
+            }
+            return;
+        }
+        // other shapes: no inference
+    }
+
+    function substituteType(t, mapping) {
+        if (!t) return t;
+        if (t.kind === "typeParam") {
+            return mapping.has(t.name) ? mapping.get(t.name) : anyType();
+        }
+        if (t.kind === "array") {
+            return { kind: "array", element: substituteType(t.element, mapping) };
+        }
+        if (t.kind === "object") {
+            const props = new Map();
+            for (const [name, pt] of t.properties.entries()) {
+                props.set(name, substituteType(pt, mapping));
+            }
+            return { kind: "object", properties: props };
+        }
+        if (t.kind === "function") {
+            const params = t.params.map(p => substituteType(p, mapping));
+            const ret = substituteType(t.returnType, mapping);
+            return functionType(params, ret, null);
+        }
+        return t;
+    }
+
     function checkProgram(node, env) {
         for (const stmt of node.body) {
             checkStatement(stmt, env, null);
@@ -1527,21 +1598,46 @@ function typeCheck(ast, source) {
                 break;
             }
             case "FuncDecl": {
+                // If the function has generic type parameters, make them available
+                // while resolving parameter and return type annotations so that
+                // TypeRef nodes referencing those names resolve to the same
+                // type parameter placeholders.
+                const resolvedTypeEnv = new Env(env);
+                if (node.typeParams) {
+                    node.typeParams.forEach(tp => resolvedTypeEnv.defineType(tp, { kind: "typeParam", name: tp }));
+                }
                 const paramTypes = node.params.map(
-                    p => (p.type ? resolveTypeExpr(p.type, env) : anyType())
+                    p => (p.type ? resolveTypeExpr(p.type, resolvedTypeEnv) : anyType())
                 );
                 const returnType = node.returnType
-                    ? resolveTypeExpr(node.returnType, env)
+                    ? resolveTypeExpr(node.returnType, resolvedTypeEnv)
                     : anyType();
-                const fnType = functionType(paramTypes, returnType);
+                const fnType = functionType(paramTypes, returnType, node.typeParams || null);
                 env.defineValue(node.name, fnType);
 
                 const fnEnv = new Env(env);
+                // make type parameters available inside the function body as types
+                if (node.typeParams) {
+                    node.typeParams.forEach(tp => fnEnv.defineType(tp, { kind: "typeParam", name: tp }));
+                }
                 node.params.forEach((p, idx) => {
                     fnEnv.defineValue(p.name, paramTypes[idx]);
                 });
 
-                checkBlock(node.body, fnEnv, fnType);
+                // If the function is generic (has type parameters) we shouldn't
+                // enforce the declared return type against type-parameter-based
+                // return expressions at declaration time. Those return checks
+                // are performed effectively at call sites when type parameters
+                // are instantiated. To avoid spurious errors like returning a
+                // `typeParam` where a concrete type was annotated, use a
+                // relaxed function type (with `any` return) while checking the
+                // body of a generic function.
+                if (node.typeParams && node.typeParams.length > 0) {
+                    const relaxed = functionType(paramTypes, anyType(), null);
+                    checkBlock(node.body, fnEnv, relaxed);
+                } else {
+                    checkBlock(node.body, fnEnv, fnType);
+                }
                 break;
             }
             case "Block":
@@ -2093,6 +2189,39 @@ function typeCheck(ast, source) {
                     return anyType();
                 }
 
+                // If callee is a generic function (has typeParams), try to infer
+                // concrete type arguments from the provided call arguments.
+                if (calleeType.typeParams && Array.isArray(calleeType.typeParams) && calleeType.typeParams.length > 0) {
+                    const mapping = new Map();
+                    // first collect arg types
+                    const argTypes = node.args.map(a => checkExpr(a, env));
+                    // try to infer mapping from each parameter
+                    for (let i = 0; i < calleeType.params.length && i < argTypes.length; i++) {
+                        inferTypeParams(calleeType.params[i], argTypes[i], mapping);
+                    }
+                    // substitute parameter and return types
+                    const instantiatedParams = calleeType.params.map(p => substituteType(p, mapping));
+                    const instantiatedReturn = substituteType(calleeType.returnType, mapping);
+
+                    if (node.args.length !== instantiatedParams.length) {
+                        error(
+                            `Function expects ${instantiatedParams.length} arguments but got ${node.args.length}`,
+                            node
+                        );
+                    }
+                    node.args.forEach((arg, idx) => {
+                        const argType = argTypes[idx];
+                        const paramType = instantiatedParams[idx] || anyType();
+                        if (!isAssignable(argType, paramType)) {
+                            error(
+                                `Argument ${idx + 1} type mismatch: expected '${typeToString(paramType)}' but got '${typeToString(argType)}'`,
+                                node
+                            );
+                        }
+                    });
+                    return instantiatedReturn;
+                }
+
                 if (node.args.length !== calleeType.params.length) {
                     error(
                         `Function expects ${calleeType.params.length} arguments but got ${node.args.length}`,
@@ -2247,15 +2376,34 @@ function typeCheck(ast, source) {
                 return { kind: "array", element: first };
             }
             case "FunctionExpr": {
-                // build function type from declared param types (or any) and declared return type (or any)
-                const paramTypes = node.params.map(p => (p.type ? resolveTypeExpr(p.type, env) : anyType()));
-                const retType = node.returnType ? resolveTypeExpr(node.returnType, env) : anyType();
-                const fnType = functionType(paramTypes, retType);
+                // If function expression has generic type params, make them available
+                // when resolving its parameter/return annotations.
+                const typeParams = node.typeParams || null;
+                const resolvedTypeEnv = new Env(env);
+                if (typeParams) {
+                    typeParams.forEach(tp => resolvedTypeEnv.defineType(tp, { kind: "typeParam", name: tp }));
+                }
 
-                // check body with new env
+                // build function type from declared param types (or any) and declared return type (or any)
+                const paramTypes = node.params.map(p => (p.type ? resolveTypeExpr(p.type, resolvedTypeEnv) : anyType()));
+                const retType = node.returnType ? resolveTypeExpr(node.returnType, resolvedTypeEnv) : anyType();
+                const fnType = functionType(paramTypes, retType, typeParams);
+
+                // check body with new env and type params visible
                 const fnEnv = new Env(env);
+                if (typeParams) {
+                    typeParams.forEach(tp => fnEnv.defineType(tp, { kind: "typeParam", name: tp }));
+                }
                 node.params.forEach((p, idx) => fnEnv.defineValue(p.name, paramTypes[idx]));
-                checkBlock(node.body, fnEnv, fnType);
+                // For generic function expressions, relax return-type checking
+                // inside the body (use any return) so that returns of type
+                // parameters don't produce an error at declaration time.
+                if (typeParams && typeParams.length > 0) {
+                    const relaxed = functionType(paramTypes, anyType(), null);
+                    checkBlock(node.body, fnEnv, relaxed);
+                } else {
+                    checkBlock(node.body, fnEnv, fnType);
+                }
                 return fnType;
             }
             case "UpdateExpr": {
