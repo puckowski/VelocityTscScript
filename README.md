@@ -9,3 +9,5 @@ Does not support:
 - interface
 - Spread syntax
 - Destructuring
+- enum
+- Generic classes or generic class functions
