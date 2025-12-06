@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "tsc": "tsc index2.ts",
+    "minify": "node minify.js"
+  },
+  "devDependencies": {
+    "terser": "^5.44.1",
+    "typescript": "^5.9.3"
+  }
+}

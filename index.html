@@ -1,0 +1,332 @@
+<html>
+
+<body>
+    <script type="module">
+        import { transpile } from './index.js';
+
+        const code = `
+      // Primitive and object types
+type UserId = number;
+type Point = { x: number, y: number };
+type Point3D = { x: number, y: number, z: number };
+
+// Function using object type and property access
+function getX(p: Point): number {
+  return p.x;
+}
+
+// Structural compatibility: Point3D is assignable to Point
+function len2D(p: Point): number {
+  // pretend we use p.x, p.y here
+  return 0;
+}
+
+let p3: Point3D = get3D(); // get3D is untyped JS; ignore for now
+let x: number = getX(p3); // OK: Point3D has x,y
+
+// Type error: accessing missing property
+function bad(p: Point): number {
+  return p.z; // error: z does not exist
+}
+
+// Type error: wrong return type
+function bad2(p: Point): string {
+  return p.x; // error: number not assignable to string
+}
+
+const p4: Point3D = get3D();
+const x2: number = getX(p4);
+if (x2 == 5) {
+    console.log("x2 is 5");
+}
+while (x2 < 10) {
+    x2 = x2 + 1;
+    if (x2 < 7) {
+        console.log("x2 is less than 7");
+    }
+}
+let arr: number[] = [1, 2, 3];
+let arr2: string[] = [ "a", "b", "c" ];
+arr[0] = 's';
+arr = arr2; // error: string[] not assignable to number[]
+arr = arr.map(x => x + 1);
+for (let i = 0; i < arr.length; i = i + 1) {
+    console.log(arr[i]);
+}
+for(let i of arr) {
+    console.log(i);
+}
+  
+arr.pop();
+
+let x = 11;
+
+while (x < 10) {
+  x++;
+}
+
+if (x > 10) {
+  console.log("big");
+} else {
+  console.log("small");
+}
+
+let color = "red";
+
+switch (color) {
+  case "red": console.log("STOP"); break;
+  case "green": console.log("GO"); break;
+  default: console.log("UNKNOWN");
+}
+
+function getNum(): number {
+return 2;
+}
+
+let s: string = 's';
+
+s = getNum();
+
+console.log(s);   
+
+type Point3D = { x: number, y: number, z: number };
+
+let p3d: Point3D = { x: 1, y: 1, z: 1 };
+
+let nop: number = 0;
+
+p3d = nop;
+
+let a: any=5;
+a = '6';
+
+let result = age >= 18 ? "adult" : "minor";
+
+const greet = function(name) {
+  return "Hi " + name;
+};
+
+const greet = function(name): string {
+  return "Hi " + name;
+};
+
+const double = x => x * 2;
+
+class Person {
+  constructor(name) {
+    this.name = name;
+  }
+  greet() {
+    console.log('Hi, I\\'m ' + this.name);
+  }
+}
+
+const p = new Person("Bob");
+p.greet();
+
+fetch("/data.json")
+  .then(res => res.json())
+  .then(data => console.log(data))
+  .catch(err => console.error(err));
+
+  async function loadUser() {
+  try {
+    const res = await fetch("/user");
+    const data = await res.json();
+    console.log(data);
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+  try {
+    console.log(data);
+  } catch (err) {
+    console.error(err);
+  }
+
+   try {
+    console.log(data);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    console.log("Finished attempting to log data.");
+  }
+
+  import { add, PI } from "./module.js";
+//export const PI = 3.14;
+
+`;
+
+        try {
+            const result = transpile(code);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
+
+
+                const code2 = `
+
+
+
+const double = x => x * 2;
+
+
+  import { add, PI } from "./module.js";
+export const PI = 3.14;
+
+export function add(x: number, y: number): number {
+  return x + y;
+}
+
+let s: string = 's';
+
+let arr: number[] = [1, 2, 3];
+arr = arr.map(x => x + 1);
+
+let n = null;                // null
+let u = undefined;           // undefined
+let sym = Symbol();          // Symbol
+let big = 123n;              // BigInt
+
+let n: null = null;                // null
+let u: undefined = undefined;      // undefined
+
+let sym: symbol = Symbol();        // symbol (built-in primitive type)
+
+let big: bigint = 123n;            // bigint (built-in primitive type for 64-bit+ integers)
+
+// --- Type definition (structural shape) ---
+export type Point3D = {
+  x: number;
+  y: number;
+  z: number;
+};
+
+// --- Class wrapper for vector math ---
+export class Vec3 {
+ x: number = 5;
+  y: number;
+  z: number;
+
+  constructor(x, y, z) {
+    this.x = x;
+    this.y = y;
+    this.z = z;
+  }
+
+  // Construct from a Point3D
+  static from(p: Point3D): Vec3 {
+    return new Vec3(p.x, p.y, p.z);
+  }
+
+  clone(): Vec3 {
+    return new Vec3(this.x, this.y, this.z);
+  }
+
+  add(v: Point3D): Vec3 {
+    return new Vec3(
+      this.x + v.x,
+      this.y + v.y,
+      this.z + v.z
+    );
+  }
+
+  sub(v: Point3D): Vec3 {
+    return new Vec3(
+      this.x - v.x,
+      this.y - v.y,
+      this.z - v.z
+    );
+  }
+
+  scale(s: number): Vec3 {
+    return new Vec3(
+      this.x * s,
+      this.y * s,
+      this.z * s
+    );
+  }
+
+  dot(v: Point3D): number {
+    return this.x * v.x + this.y * v.y + this.z * v.z;
+  }
+
+  cross(v: Point3D): Vec3 {
+    return new Vec3(
+      this.y * v.z - this.z * v.y,
+      this.z * v.x - this.x * v.z,
+      this.x * v.y - this.y * v.x
+    );
+  }
+
+  length(): number {
+    return Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+  }
+
+  normalize(): Vec3 {
+    const len = this.length();
+    return len === 0
+      ? new Vec3(0, 0, 0)
+      : this.scale(1 / len);
+  }
+}
+
+// --- Example Use ---
+const p1: Point3D = { x: 1, y: 2, z: 3 };
+const p2: Point3D = { x: 4, y: 5, z: 6 };
+
+const v1 = Vec3.from(p1);
+const v2 = Vec3.from(p2);
+
+console.log("add:", v1.add(p2));
+console.log("sub:", v1.sub(p2));
+console.log("dot:", v1.dot(p2));
+console.log("cross:", v1.cross(p2));
+console.log("normalize:", v1.normalize());
+
+`;
+
+     try {
+            const result = transpile(code2);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
+
+
+
+           const code3 = `
+const double = x => x * 2;
+
+const arr = [1, 2, 3];
+let arr2 = [...arr];
+
+`;
+
+     try {
+            const result = transpile(code3);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
+
+
+                   const code4 = `
+const double = x => x * 2;
+
+const { a, b: c, ...rest } = obj;
+
+`;
+
+     try {
+            const result = transpile(code4);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
+    </script>
+</body>
+
+</html>
