@@ -218,6 +218,8 @@ function ObjectType(properties, pos) { return { kind: "ObjectType", properties, 
 function TypeProperty(name, type, pos) { return { kind: "TypeProperty", name, type, pos }; }
 function ArrayType(element, pos) { return { kind: "ArrayType", element, pos }; }
 function UnionType(types, pos) { return { kind: "UnionType", types, pos }; }
+// Type-level string literal (e.g.  "idle" in a type expression)
+function TypeLiteral(value, pos) { return { kind: "TypeLiteral", value, pos }; }
 
 // Export wrapper AST node: export <decl>
 function ExportDecl(decl, pos) { return { kind: "ExportDecl", decl, pos }; }
@@ -311,6 +313,10 @@ function parse(tokens) {
         let first;
         if (tok.type === "punct" && tok.value === "{") {
             first = parseObjectType();
+        } else if (tok.type === "string") {
+            // Type-level string literal, e.g. type Status = "idle" | "loading";
+            const s = consume("string");
+            first = TypeLiteral(s.value, s.pos);
         } else {
             first = parseSimpleTypeRef();
         }
@@ -321,11 +327,14 @@ function parse(tokens) {
             while (peek().type === "punct" && peek().value === "|") {
                 consume("punct", "|");
                 const nextTok = peek();
-                if (nextTok.type === "punct" && nextTok.value === "{") {
-                    types.push(parseObjectType());
-                } else {
-                    types.push(parseSimpleTypeRef());
-                }
+                    if (nextTok.type === "punct" && nextTok.value === "{") {
+                        types.push(parseObjectType());
+                    } else if (nextTok.type === "string") {
+                        const s = consume("string");
+                        types.push(TypeLiteral(s.value, s.pos));
+                    } else {
+                        types.push(parseSimpleTypeRef());
+                    }
             }
             return UnionType(types, tok.pos);
         }
@@ -1474,6 +1483,11 @@ function typeToString(t) {
         if (t.kind === "union") {
             return t.types.map(p => _typeToString(p, visited)).join(" | ");
         }
+        if (t.kind === "literal") {
+            // represent string literal types with quotes
+            if (t.literalKind === "string") return `"${t.value}"`;
+            return String(t.value);
+        }
         if (t.kind === "array") {
             return `${_typeToString(t.element, visited)}[]`;
         }
@@ -1585,6 +1599,10 @@ function typeCheck(ast, source) {
                     return primitiveType("void");
                 }
                 return t;
+            }
+            case "TypeLiteral": {
+                // only string literal types supported for now
+                return { kind: "literal", literalKind: "string", value: node.value };
             }
             case "UnionType": {
                 const parts = node.types.map(tn => resolveTypeExpr(tn, env));
@@ -2060,7 +2078,9 @@ function typeCheck(ast, source) {
             case "BigIntLiteral":
                 return primitiveType("bigint");
             case "StringLiteral":
-                return primitiveType("string");
+                // Return a precise literal type for string literals so we can
+                // reason about unions of string literal types (e.g. "idle" | "loading").
+                return { kind: "literal", literalKind: "string", value: node.value };
             case "BoolLiteral":
                 return primitiveType("boolean");
             case "Identifier": {
@@ -2157,9 +2177,13 @@ function typeCheck(ast, source) {
                 const left = checkExpr(node.left, env);
                 const right = checkExpr(node.right, env);
 
-                if (left.kind === "any" || right.kind === "any") {
+                // Treat literal types as their base primitive kind for operator checks
+                const leftKind = left && left.kind === "literal" ? left.literalKind : (left ? left.kind : null);
+                const rightKind = right && right.kind === "literal" ? right.literalKind : (right ? right.kind : null);
+
+                if (leftKind === "any" || rightKind === "any" || left.kind === "any" || right.kind === "any") {
                     // Be permissive when any is involved
-                    if (["==", "!=", "===", "!==", "<", ">", "<=", ">="].includes(node.op)) {
+                    if (["==", "!=", "===" , "!==", "<", ">", "<=", ">="].includes(node.op)) {
                         return primitiveType("boolean");
                     }
                     if (["&&", "||"].includes(node.op)) {
@@ -2172,10 +2196,10 @@ function typeCheck(ast, source) {
                 }
 
                 if (node.op === "+") {
-                    if (left.kind === "number" && right.kind === "number") {
+                    if (leftKind === "number" && rightKind === "number") {
                         return primitiveType("number");
                     }
-                    if (left.kind === "string" && right.kind === "string") {
+                    if (leftKind === "string" && rightKind === "string") {
                         return primitiveType("string");
                     }
                     error(
@@ -2185,7 +2209,7 @@ function typeCheck(ast, source) {
                     return anyType();
                 }
                 if (["-", "*", "/"].includes(node.op)) {
-                    if (left.kind === "number" && right.kind === "number") {
+                    if (leftKind === "number" && rightKind === "number") {
                         return primitiveType("number");
                     }
                     error(
@@ -2196,9 +2220,9 @@ function typeCheck(ast, source) {
                 }
 
                 // equality (support both double and triple-equals)
-                if (["==", "!=", "===", "!=="].includes(node.op)) {
+                if (["==", "!=", "===" , "!=="].includes(node.op)) {
                     // allow equality for standard primitive kinds (now includes null/undefined/symbol)
-                    if (left.kind === right.kind && ["number", "string", "boolean", "null", "undefined", "symbol"].includes(left.kind)) {
+                    if (leftKind === rightKind && ["number", "string", "boolean", "null", "undefined", "symbol"].includes(leftKind)) {
                         return primitiveType("boolean");
                     }
                     error(
@@ -2210,7 +2234,7 @@ function typeCheck(ast, source) {
 
                 // relational
                 if (["<", ">", "<=", ">="].includes(node.op)) {
-                    if (left.kind === "number" && right.kind === "number") {
+                    if (leftKind === "number" && rightKind === "number") {
                         return primitiveType("boolean");
                     }
                     error(
@@ -2222,7 +2246,7 @@ function typeCheck(ast, source) {
 
                 // logical
                 if (node.op === "&&" || node.op === "||") {
-                    if (left.kind === "boolean" && right.kind === "boolean") {
+                    if (leftKind === "boolean" && rightKind === "boolean") {
                         return primitiveType("boolean");
                     }
                     error(
@@ -2618,8 +2642,18 @@ function typeCheck(ast, source) {
                 return true;
             }
 
-        // short-circuit for primitives
+        // short-circuit for primitives and literal values
         if (from.kind !== "object" && from.kind !== "function" && from.kind !== "array") {
+            // literal values (e.g. string literal) are assignable to their base primitive
+            if (from.kind === "literal") {
+                if (to.kind === "literal") {
+                    // only assignable if identical literal
+                    return from.literalKind === to.literalKind && from.value === to.value;
+                }
+                // e.g. '"loading"' assignable to 'string'
+                if (to.kind === from.literalKind) return true;
+                return false;
+            }
             return from.kind === to.kind;
         }
 
