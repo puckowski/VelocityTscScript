@@ -513,9 +513,21 @@ status = "loading";
 
 
                                                           const code12 = `
+import { computed, ref, type ComputedRef, type Ref } from "vue";
+
+type Ref<T> = {
+        value: T;
+};
 
     export type TodoApi = {
 
+ newTitle: Ref<string>;
+  hideCompleted: Ref<boolean>;
+  todos: Ref<Todo[]>;
+
+  remaining: ComputedRef<number>;
+  completedCount: ComputedRef<number>;
+  visibleTodos: ComputedRef<Todo[]>;
 
   addTodo: () => void;
   removeTodo: (id: number) => void;

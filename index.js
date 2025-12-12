@@ -188,7 +188,7 @@ const tokenizeTS = tokenize;
 
 // AST node constructors
 function Program(body) { return { kind: "Program", body }; }
-function TypeDecl(name, type, pos) { return { kind: "TypeDecl", name, type, pos }; }
+function TypeDecl(name, type, pos, typeParams = null) { return { kind: "TypeDecl", name, type, pos, typeParams }; }
 function VarDecl(name, type, init, pos) { return { kind: "VarDecl", name, type, init, pos }; }
 function ConstDecl(name, type, init, pos) { return { kind: "ConstDecl", name, type, init, pos }; }
 // NEW/UPDATED: Function decl / expr with isAsync flag
@@ -497,10 +497,12 @@ function parse(tokens) {
     function parseTypeDecl() {
         consume("keyword", "type");
         const nameTok = consume("identifier");
+        // optional generic type parameters: type Foo<T, U> = ...
+        const tparams = parseTypeParams();
         consume("punct", "=");
         const typeExpr = parseTypeExpr();
         consume("punct", ";");
-        return TypeDecl(nameTok.value, typeExpr, nameTok.pos);
+        return TypeDecl(nameTok.value, typeExpr, nameTok.pos, tparams);
     }
 
     // Top-level var/const declarations support optional type annotations or omitted type (JS-style)
@@ -1622,11 +1624,45 @@ function typeCheck(ast, source) {
 
                 const prim = primitiveType(node.name);
                 if (prim) return prim;
+
                 const t = env.lookupType(node.name);
                 if (!t) {
                     error(`Unknown type '${node.name}'`, node);
                     return primitiveType("void");
                 }
+
+                // If this is a type parameter placeholder, return it directly
+                if (t.kind === "typeParam") return t;
+
+                // If this is a type alias with generics, instantiate it when
+                // type arguments are provided. Alias stored as { kind: 'alias', typeParams: [...], typeAst }
+                if (t.kind === "alias") {
+                    // Resolve the alias's AST in an environment where its type
+                    // parameter names are visible as typeParam placeholders. This
+                    // yields a type that may contain { kind: 'typeParam' } nodes.
+                    const aliasEnv = new Env(env);
+                    for (const tp of t.typeParams || []) {
+                        aliasEnv.defineType(tp, { kind: "typeParam", name: tp });
+                    }
+                    const aliasResolved = resolveTypeExpr(t.typeAst, aliasEnv);
+
+                    // If type arguments supplied, build mapping and substitute
+                    if (node.typeArgs && node.typeArgs.length > 0) {
+                        const mapping = new Map();
+                        for (let i = 0; i < (t.typeParams || []).length; i++) {
+                            const paramName = t.typeParams[i];
+                            const argNode = node.typeArgs[i];
+                            const argType = argNode ? resolveTypeExpr(argNode, env) : anyType();
+                            mapping.set(paramName, argType);
+                        }
+                        return substituteType(aliasResolved, mapping);
+                    }
+
+                    // No type args: return the unresolved alias type (contains typeParam placeholders)
+                    return aliasResolved;
+                }
+
+                // fall back to whatever the environment returned
                 return t;
             }
             case "TypeLiteral": {
@@ -1718,8 +1754,13 @@ function typeCheck(ast, source) {
                 break;
             }
             case "TypeDecl": {
-                const t = resolveTypeExpr(node.type, env);
-                env.defineType(node.name, t);
+                if (node.typeParams && node.typeParams.length > 0) {
+                    // store generic type alias as an 'alias' with its AST and params
+                    env.defineType(node.name, { kind: "alias", typeParams: node.typeParams, typeAst: node.type });
+                } else {
+                    const t = resolveTypeExpr(node.type, env);
+                    env.defineType(node.name, t);
+                }
                 break;
             }
             case "VarDecl": {
