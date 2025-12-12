@@ -495,6 +495,43 @@ status = "loading";
         } catch (error) {
             console.error('Error during transpilation:', error);
         }
+
+
+                                                    const code11 = `
+
+    type List = number[] | string[];
+    let l: List = [1,2];
+    l = ['s'];
+`;
+
+     try {
+            const result = transpile(code11);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
+
+
+                                                          const code12 = `
+
+    export type TodoApi = {
+
+
+  addTodo: () => void;
+  removeTodo: (id: number) => void;
+  clearCompleted: () => void;
+};
+
+const api: TodoApi = null;
+api = 2;
+`;
+
+     try {
+            const result = transpile(code12);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
     </script>
 </body>
 

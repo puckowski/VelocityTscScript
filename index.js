@@ -220,6 +220,8 @@ function ArrayType(element, pos) { return { kind: "ArrayType", element, pos }; }
 function UnionType(types, pos) { return { kind: "UnionType", types, pos }; }
 // Type-level string literal (e.g.  "idle" in a type expression)
 function TypeLiteral(value, pos) { return { kind: "TypeLiteral", value, pos }; }
+// Function type at the type-expression level: (params) => returnType
+function TypeFunction(params, returnType, pos) { return { kind: "TypeFunction", params, returnType, pos }; }
 
 // Export wrapper AST node: export <decl>
 function ExportDecl(decl, pos) { return { kind: "ExportDecl", decl, pos }; }
@@ -313,6 +315,33 @@ function parse(tokens) {
         let first;
         if (tok.type === "punct" && tok.value === "{") {
             first = parseObjectType();
+        } else if (tok.type === "punct" && tok.value === "(") {
+            // possible function type: (params) => ReturnType
+            // We'll parse a parameter list and require a following '=>'
+            const startPos = tok.pos;
+            // attempt to parse params
+            consume("punct", "(");
+            const params = [];
+            if (!(peek().type === "punct" && peek().value === ")")) {
+                do {
+                    const pNameTok = consume("identifier");
+                    let pType = null;
+                    if (peek().type === "punct" && peek().value === ":") {
+                        consume("punct", ":");
+                        pType = parseTypeExpr();
+                    }
+                    params.push(Param(pNameTok.value, pType, pNameTok.pos));
+                } while (match("punct", ",") && true);
+            }
+            consume("punct", ")");
+            // require arrow
+            if (peek().type === "punct" && peek().value === "=>") {
+                consume("punct", "=>");
+                const retType = parseTypeExpr();
+                first = TypeFunction(params, retType, startPos);
+            } else {
+                throw new Error("Unexpected '(' in type expression: expected function type '(... ) => ...'");
+            }
         } else if (tok.type === "string") {
             // Type-level string literal, e.g. type Status = "idle" | "loading";
             const s = consume("string");
@@ -1614,6 +1643,12 @@ function typeCheck(ast, source) {
             }
             case "ObjectType": {
                 return objectTypeFromAst(node, env, resolveTypeExpr);
+            }
+            case "TypeFunction": {
+                // node.params is an array of Param-like nodes (name, type)
+                const paramTypes = (node.params || []).map(p => p.type ? resolveTypeExpr(p.type, env) : anyType());
+                const ret = node.returnType ? resolveTypeExpr(node.returnType, env) : anyType();
+                return functionType(paramTypes, ret, null);
             }
             default:
                 error("Unknown type expression kind: " + node.kind, node);
