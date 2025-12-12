@@ -195,7 +195,7 @@ function ConstDecl(name, type, init, pos) { return { kind: "ConstDecl", name, ty
 function FuncDecl(name, typeParams, params, returnType, body, pos, isAsync = false) {
     return { kind: "FuncDecl", name, typeParams, params, returnType, body, pos, isAsync };
 }
-function Param(name, type, pos) { return { kind: "Param", name, type, pos }; }
+function Param(name, type, pos, init = null) { return { kind: "Param", name, type, pos, init }; }
 function Block(statements, pos) { return { kind: "Block", statements, pos }; }
 function ReturnStmt(expr, pos) { return { kind: "ReturnStmt", expr, pos }; }
 function ExprStmt(expr, pos) { return { kind: "ExprStmt", expr, pos }; }
@@ -522,7 +522,14 @@ function parse(tokens) {
                     pType = parseSimpleTypeRef();
                 }
 
-                params.push(Param(pName.value, pType, pName.pos));
+                // optional default initializer: = expr
+                let pInit = null;
+                if (peek().type === "punct" && peek().value === "=") {
+                    consume("punct", "=");
+                    pInit = parseExpression();
+                }
+
+                params.push(Param(pName.value, pType, pName.pos, pInit));
             } while (match("punct", ","));
             consume("punct", ")");
         }
@@ -745,7 +752,13 @@ function parse(tokens) {
                             consume("punct", ":");
                             pType = parseSimpleTypeRef();
                         }
-                        params.push(Param(pName.value, pType, pName.pos));
+                        // optional default initializer
+                        let pInit = null;
+                        if (peek().type === "punct" && peek().value === "=") {
+                            consume("punct", "=");
+                            pInit = parseExpression();
+                        }
+                        params.push(Param(pName.value, pType, pName.pos, pInit));
                     } while (match("punct", ",") && true);
                 }
                 consume("punct", ")");
@@ -1140,7 +1153,14 @@ function parse(tokens) {
                             pType = parseSimpleTypeRef();
                         }
 
-                        params.push(Param(pName.value, pType, pName.pos));
+                        // optional default initializer
+                        let pInit = null;
+                        if (peek().type === "punct" && peek().value === "=") {
+                            consume("punct", "=");
+                            pInit = parseExpression();
+                        }
+
+                        params.push(Param(pName.value, pType, pName.pos, pInit));
                     } while (match("punct", ","));
                 }
                 consume("punct", ")");
@@ -1177,7 +1197,13 @@ function parse(tokens) {
                             consume("punct", ":");
                             pType = parseSimpleTypeRef();
                         }
-                        params.push(Param(pName.value, pType, pName.pos));
+                        // optional default initializer
+                        let pInit = null;
+                        if (peek().type === "punct" && peek().value === "=") {
+                            consume("punct", "=");
+                            pInit = parseExpression();
+                        }
+                        params.push(Param(pName.value, pType, pName.pos, pInit));
                     } while (match("punct", ",") && true);
                 }
                 consume("punct", ")");
@@ -1217,7 +1243,14 @@ function parse(tokens) {
                         pType = parseSimpleTypeRef();
                     }
 
-                    params.push(Param(pName.value, pType, pName.pos));
+                    // optional default initializer
+                    let pInit = null;
+                    if (peek().type === "punct" && peek().value === "=") {
+                        consume("punct", "=");
+                        pInit = parseExpression();
+                    }
+
+                    params.push(Param(pName.value, pType, pName.pos, pInit));
                 } while (match("punct", ","));
                 consume("punct", ")");
             }
@@ -1666,7 +1699,7 @@ function typeCheck(ast, source) {
                     node.typeParams.forEach(tp => resolvedTypeEnv.defineType(tp, { kind: "typeParam", name: tp }));
                 }
                 const paramTypes = node.params.map(
-                    p => (p.type ? resolveTypeExpr(p.type, resolvedTypeEnv) : anyType())
+                    p => (p.type ? resolveTypeExpr(p.type, resolvedTypeEnv) : (p.init ? checkExpr(p.init, env) : anyType()))
                 );
                 const returnType = node.returnType
                     ? resolveTypeExpr(node.returnType, resolvedTypeEnv)
@@ -1865,7 +1898,7 @@ function typeCheck(ast, source) {
                 const methodParamMap = new Map();
                 for (const m of node.methods) {
                     const paramTypes = m.params.map(
-                        p => (p.type ? resolveTypeExpr(p.type, env) : anyType())
+                        p => (p.type ? resolveTypeExpr(p.type, env) : (p.init ? checkExpr(p.init, env) : anyType()))
                     );
                     methodParamMap.set(m, paramTypes);
 
@@ -2482,7 +2515,7 @@ function typeCheck(ast, source) {
                 }
 
                 // build function type from declared param types (or any) and declared return type (or any)
-                const paramTypes = node.params.map(p => (p.type ? resolveTypeExpr(p.type, resolvedTypeEnv) : anyType()));
+                const paramTypes = node.params.map(p => (p.type ? resolveTypeExpr(p.type, resolvedTypeEnv) : (p.init ? checkExpr(p.init, env) : anyType())));
                 const retType = node.returnType ? resolveTypeExpr(node.returnType, resolvedTypeEnv) : anyType();
                 const fnType = functionType(paramTypes, retType, typeParams);
 
@@ -2601,6 +2634,13 @@ function emitJS(ast) {
             .join("\n");
     }
 
+    // helper: render a parameter (include default initializer if present)
+    function paramToStr(p) {
+        if (!p) return "";
+        if (p.init) return `${p.name} = ${emitExpr(p.init)}`;
+        return p.name;
+    }
+
     function emitStmt(node) {
         switch (node.kind) {
             case "ExportDecl": {
@@ -2617,7 +2657,7 @@ function emitJS(ast) {
             case "ConstDecl":
                 return `const ${node.name}` + (node.init ? ` = ${emitExpr(node.init)}` : "") + `;`;
             case "FuncDecl": {
-                const params = node.params.map(p => p.name).join(", ");
+                const params = node.params.map(paramToStr).join(", ");
                 const body = emitBlock(node.body);
                 const asyncPrefix = node.isAsync ? "async " : "";
                 return `${asyncPrefix}function ${node.name}(${params}) ${body}`;
@@ -2680,7 +2720,7 @@ function emitJS(ast) {
                 // otherwise, if we have instance field initializers, create a default ctor
                 let ctorStr = "";
                 if (ctor) {
-                    const params = ctor.params.map(p => p.name).join(", ");
+                    const params = ctor.params.map(paramToStr).join(", ");
                     const innerLines = [];
                     for (const f of instanceInits) {
                         innerLines.push(`this.${f.name} = ${emitExpr(f.init)};`);
@@ -2696,7 +2736,7 @@ function emitJS(ast) {
                 }
 
                 const methodParts = otherMethods.map(m => {
-                    const params = m.params.map(p => p.name).join(", ");
+                    const params = m.params.map(paramToStr).join(", ");
                     const staticPrefix = m.isStatic ? "static " : "";
                     return `  ${staticPrefix}${m.name}(${params}) ${emitBlock(m.body)}`;
                 }).join("\n\n");
@@ -2762,7 +2802,7 @@ function emitJS(ast) {
             case "IndexExpr":
                 return `${emitExpr(node.object)}[${emitExpr(node.index)}]`;
             case "FunctionExpr": {
-                const params = node.params.map(p => p.name).join(", ");
+                const params = node.params.map(paramToStr).join(", ");
                 const namePart = node.name ? ` ${node.name}` : "";
                 const asyncPrefix = node.isAsync ? "async " : "";
                 return `${asyncPrefix}function${namePart}(${params}) ${emitBlock(node.body)}`;
