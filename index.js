@@ -167,7 +167,7 @@ function tokenize(input) {
             "+", "-", "*", "/", "=",
             ",", ":", ".", "<", ">",
             "[", "]",
-            "?"
+            "?", "|"
         ];
         if (singleChars.includes(c)) {
             tokens.push({ type: "punct", value: c, pos: i });
@@ -217,6 +217,7 @@ function TypeRef(name, typeArgs, pos) { return { kind: "TypeRef", name, typeArgs
 function ObjectType(properties, pos) { return { kind: "ObjectType", properties, pos }; }
 function TypeProperty(name, type, pos) { return { kind: "TypeProperty", name, type, pos }; }
 function ArrayType(element, pos) { return { kind: "ArrayType", element, pos }; }
+function UnionType(types, pos) { return { kind: "UnionType", types, pos }; }
 
 // Export wrapper AST node: export <decl>
 function ExportDecl(decl, pos) { return { kind: "ExportDecl", decl, pos }; }
@@ -305,11 +306,31 @@ function parse(tokens) {
 
     // ---- Type parsing ----
     function parseTypeExpr() {
+        // parse a primary type (object type or simple ref/array/generic)
         const tok = peek();
+        let first;
         if (tok.type === "punct" && tok.value === "{") {
-            return parseObjectType();
+            first = parseObjectType();
+        } else {
+            first = parseSimpleTypeRef();
         }
-        return parseSimpleTypeRef();
+
+        // support union types: T | U | V
+        if (peek().type === "punct" && peek().value === "|") {
+            const types = [first];
+            while (peek().type === "punct" && peek().value === "|") {
+                consume("punct", "|");
+                const nextTok = peek();
+                if (nextTok.type === "punct" && nextTok.value === "{") {
+                    types.push(parseObjectType());
+                } else {
+                    types.push(parseSimpleTypeRef());
+                }
+            }
+            return UnionType(types, tok.pos);
+        }
+
+        return first;
     }
 
     function parseSimpleTypeRef() {
@@ -452,7 +473,7 @@ function parse(tokens) {
         // optional type annotation
         if (peek().type === "punct" && peek().value === ":") {
             consume("punct", ":");
-            type = parseSimpleTypeRef();
+            type = parseTypeExpr();
         }
         // optional initializer
         let init = null;
@@ -470,7 +491,7 @@ function parse(tokens) {
         let type = null;
         if (peek().type === "punct" && peek().value === ":") {
             consume("punct", ":");
-            type = parseSimpleTypeRef();
+            type = parseTypeExpr();
         }
         // const must have initializer
         if (peek().type === "punct" && peek().value === "=") {
@@ -519,7 +540,7 @@ function parse(tokens) {
                 let pType = null;
                 if (peek().type === "punct" && peek().value === ":") {
                     consume("punct", ":");
-                    pType = parseSimpleTypeRef();
+                    pType = parseTypeExpr();
                 }
 
                 // optional default initializer: = expr
@@ -539,7 +560,7 @@ function parse(tokens) {
         let retType = null;
         if (peek().type === "punct" && peek().value === ":") {
             consume("punct", ":");
-            retType = parseSimpleTypeRef();
+            retType = parseTypeExpr();
         }
 
         const body = parseBlock();
@@ -630,7 +651,7 @@ function parse(tokens) {
             let typeAnn = null;
             if (peek().type === "punct" && peek().value === ":") {
                 consume("punct", ":");
-                typeAnn = parseSimpleTypeRef();
+                typeAnn = parseTypeExpr();
             }
 
             // Check for for-of / for-in
@@ -750,7 +771,7 @@ function parse(tokens) {
                         let pType = null;
                         if (peek().type === "punct" && peek().value === ":") {
                             consume("punct", ":");
-                            pType = parseSimpleTypeRef();
+                            pType = parseTypeExpr();
                         }
                         // optional default initializer
                         let pInit = null;
@@ -766,7 +787,7 @@ function parse(tokens) {
                 let mReturnType = null;
                 if (peek().type === "punct" && peek().value === ":") {
                     consume("punct", ":");
-                    mReturnType = parseSimpleTypeRef();
+                    mReturnType = parseTypeExpr();
                 }
                 const body = parseBlock();
                 methods.push(MethodDecl(mNameTok.value, params, body, mNameTok.pos, isCtor, mReturnType, isStatic));
@@ -776,7 +797,7 @@ function parse(tokens) {
                 let fType = null;
                 if (peek().type === "punct" && peek().value === ":") {
                     consume("punct", ":");
-                    fType = parseSimpleTypeRef();
+                    fType = parseTypeExpr();
                 }
                 let fInit = null;
                 if (peek().type === "punct" && peek().value === "=") {
@@ -1150,7 +1171,7 @@ function parse(tokens) {
                         // OPTIONAL : Type
                         if (peek().type === "punct" && peek().value === ":") {
                             consume("punct", ":");
-                            pType = parseSimpleTypeRef();
+                            pType = parseTypeExpr();
                         }
 
                         // optional default initializer
@@ -1170,7 +1191,7 @@ function parse(tokens) {
                 let returnType = null;
                 if (peek().type === "punct" && peek().value === ":") {
                     consume("punct", ":");
-                    returnType = parseSimpleTypeRef();
+                    returnType = parseTypeExpr();
                 }
 
                 const body = parseBlock();
@@ -1195,7 +1216,7 @@ function parse(tokens) {
                         let pType = null;
                         if (peek().type === "punct" && peek().value === ":") {
                             consume("punct", ":");
-                            pType = parseSimpleTypeRef();
+                            pType = parseTypeExpr();
                         }
                         // optional default initializer
                         let pInit = null;
@@ -1210,7 +1231,7 @@ function parse(tokens) {
                 let returnType = null;
                 if (peek().type === "punct" && peek().value === ":") {
                     consume("punct", ":");
-                    returnType = parseSimpleTypeRef();
+                    returnType = parseTypeExpr();
                 }
                 const body = parseBlock();
                 return FunctionExpr(name, typeParams, params, returnType, body, funcTok.pos, true);
@@ -1240,7 +1261,7 @@ function parse(tokens) {
                     // optional : Type
                     if (peek().type === "punct" && peek().value === ":") {
                         consume("punct", ":");
-                        pType = parseSimpleTypeRef();
+                        pType = parseTypeExpr();
                     }
 
                     // optional default initializer
@@ -1260,7 +1281,7 @@ function parse(tokens) {
             let returnType = null;
             if (peek().type === "punct" && peek().value === ":") {
                 consume("punct", ":");
-                returnType = parseSimpleTypeRef();
+                returnType = parseTypeExpr();
             }
 
             const body = parseBlock();
@@ -1366,7 +1387,7 @@ function parse(tokens) {
                 if (!(peek().type === "punct" && peek().value === ")")) {
                     do {
                         const p = consume("identifier");
-                        params.push(p.value);
+                            params.push(p.value);
                     } while (match("punct", ",") && true);
                 }
                 consume("punct", ")");
@@ -1405,7 +1426,11 @@ function anyType() {
 
 function primitiveType(name) {
     if (name === "any") return anyType();
-    // include additional JS/TS primitive kinds: null, undefined, symbol
+    // include additional JS/TS primitive kinds: null, undefined, symbol, object
+    if (name === "object") {
+        // represent built-in 'object' as an empty structural object type
+        return { kind: "object", properties: new Map() };
+    }
     if (!["number", "string", "boolean", "void", "bigint", "null", "undefined", "symbol"].includes(name)) return null;
     return { kind: name };
 }
@@ -1445,6 +1470,9 @@ function typeToString(t) {
             }
             visited.delete(t);
             return `{ ${parts.join("; ")} }`;
+        }
+        if (t.kind === "union") {
+            return t.types.map(p => _typeToString(p, visited)).join(" | ");
         }
         if (t.kind === "array") {
             return `${_typeToString(t.element, visited)}[]`;
@@ -1557,6 +1585,10 @@ function typeCheck(ast, source) {
                     return primitiveType("void");
                 }
                 return t;
+            }
+            case "UnionType": {
+                const parts = node.types.map(tn => resolveTypeExpr(tn, env));
+                return { kind: "union", types: parts };
             }
             case "ArrayType": {
                 const el = resolveTypeExpr(node.element, env);
@@ -2569,6 +2601,22 @@ function typeCheck(ast, source) {
         if (!from || !to) return false;
         if (from === to) return true;
         if (from.kind === "any" || to.kind === "any") return true;
+
+            // handle union target: allow if `from` is assignable to any member
+            if (to.kind === "union") {
+                for (const m of to.types) {
+                    if (isAssignable(from, m, visited)) return true;
+                }
+                return false;
+            }
+
+            // handle union source: require every member of `from` to be assignable to `to`
+            if (from.kind === "union") {
+                for (const m of from.types) {
+                    if (!isAssignable(m, to, visited)) return false;
+                }
+                return true;
+            }
 
         // short-circuit for primitives
         if (from.kind !== "object" && from.kind !== "function" && from.kind !== "array") {
