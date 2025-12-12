@@ -213,7 +213,7 @@ function CaseClause(test, consequent, pos) { return { kind: "CaseClause", test, 
 function BreakStmt(pos) { return { kind: "BreakStmt", pos }; }
 
 // Type AST
-function TypeRef(name, pos) { return { kind: "TypeRef", name, pos }; }
+function TypeRef(name, typeArgs, pos) { return { kind: "TypeRef", name, typeArgs, pos }; }
 function ObjectType(properties, pos) { return { kind: "ObjectType", properties, pos }; }
 function TypeProperty(name, type, pos) { return { kind: "TypeProperty", name, type, pos }; }
 function ArrayType(element, pos) { return { kind: "ArrayType", element, pos }; }
@@ -260,7 +260,8 @@ function FieldDecl(name, type, init, pos, isStatic = false) { return { kind: "Fi
 // ClassDecl now optionally holds a `superClass` name (string) when the class extends another
 function ClassDecl(name, methods, fields, pos, superClass = null) { return { kind: "ClassDecl", name, methods, fields, pos, superClass }; }
 function MethodDecl(name, params, body, pos, isConstructor, returnType = null, isStatic = false) { return { kind: "MethodDecl", name, params, body, pos, isConstructor, returnType, isStatic }; }
-function NewExpr(callee, args, pos) { return { kind: "NewExpr", callee, args, pos }; }
+// NewExpr now may carry optional typeArgs for generics like `new Map<string, number>()`
+function NewExpr(callee, args, typeArgs, pos) { return { kind: "NewExpr", callee, args, typeArgs, pos }; }
 
 /* =============== PARSER =============== */
 
@@ -315,7 +316,20 @@ function parse(tokens) {
         const tok = peek();
         if (tok.type === "identifier") {
             consume("identifier");
-            let base = TypeRef(tok.value, tok.pos);
+            // optional generic type arguments: <T, U>
+            let typeArgs = null;
+            if (peek().type === "punct" && peek().value === "<") {
+                consume("punct", "<");
+                typeArgs = [];
+                if (!(peek().type === "punct" && peek().value === ">")) {
+                    do {
+                        // parse a full type expression as a type argument
+                        typeArgs.push(parseTypeExpr());
+                    } while (match("punct", ",") && true);
+                }
+                consume("punct", ">");
+            }
+            let base = TypeRef(tok.value, typeArgs, tok.pos);
             // support array type syntax: T[]
             while (peek().type === "punct" && peek().value === "[") {
                 const bracketTok = consume("punct", "[");
@@ -920,9 +934,23 @@ function parse(tokens) {
             const newTok = consume("keyword", "new");
             // callee: accept identifier or a member expression starting with identifier
             let callee = null;
+            // hoist calleeTypeArgs so it's available when creating NewExpr below
+            let calleeTypeArgs = null;
             if (peek().type === "identifier") {
                 const id = consume("identifier");
-                callee = Identifier(id.value, id.pos);
+                // allow optional generic type arguments on constructor: new Map<string, number>()
+                const calleeIdent = Identifier(id.value, id.pos);
+                if (peek().type === "punct" && peek().value === "<") {
+                    consume("punct", "<");
+                    calleeTypeArgs = [];
+                    if (!(peek().type === "punct" && peek().value === ">")) {
+                        do {
+                            calleeTypeArgs.push(parseTypeExpr());
+                        } while (match("punct", ",") && true);
+                    }
+                    consume("punct", ">");
+                }
+                callee = calleeIdent;
             } else {
                 throw new Error("Expected identifier after 'new' at " + newTok.pos);
             }
@@ -935,7 +963,7 @@ function parse(tokens) {
                 } while (match("punct", ",") && true);
             }
             consume("punct", ")");
-            let expr = NewExpr(callee, args, newTok.pos);
+            let expr = NewExpr(callee, args, calleeTypeArgs, newTok.pos);
             // allow chaining postfixes on the result
             while (true) {
                 const tok = peek();
@@ -1388,6 +1416,12 @@ function typeToString(t) {
         if (t.kind === "array") {
             return `${_typeToString(t.element, visited)}[]`;
         }
+        if (t.kind === "map") {
+            return `Map<${_typeToString(t.key, visited)}, ${_typeToString(t.value, visited)}>`;
+        }
+        if (t.kind === "set") {
+            return `Set<${_typeToString(t.element, visited)}>`;
+        }
         return t.kind;
     }
     return _typeToString(t, new WeakSet());
@@ -1466,6 +1500,22 @@ function typeCheck(ast, source) {
     function resolveTypeExpr(node, env) {
         switch (node.kind) {
             case "TypeRef": {
+                // Special-case built-in generic types Map and Set
+                // (added support so type annotations like Map<string, number>
+                // and Set<string> are parsed and treated in the type system)
+                if (node.name === "Map") {
+                    let keyT = anyType();
+                    let valT = anyType();
+                    if (node.typeArgs && node.typeArgs.length >= 1) keyT = resolveTypeExpr(node.typeArgs[0], env);
+                    if (node.typeArgs && node.typeArgs.length >= 2) valT = resolveTypeExpr(node.typeArgs[1], env);
+                    return { kind: "map", key: keyT, value: valT };
+                }
+                if (node.name === "Set") {
+                    let el = anyType();
+                    if (node.typeArgs && node.typeArgs.length >= 1) el = resolveTypeExpr(node.typeArgs[0], env);
+                    return { kind: "set", element: el };
+                }
+
                 const prim = primitiveType(node.name);
                 if (prim) return prim;
                 const t = env.lookupType(node.name);
@@ -2343,6 +2393,26 @@ function typeCheck(ast, source) {
                 return objType.element;
             }
             case "NewExpr": {
+                // Special-case built-in constructors Map and Set when used with optional type args
+                if (node.callee && node.callee.kind === "Identifier") {
+                    const id = node.callee.name;
+                    if (id === "Map") {
+                        let keyT = anyType();
+                        let valT = anyType();
+                        if (node.typeArgs && node.typeArgs.length >= 1) keyT = resolveTypeExpr(node.typeArgs[0], env);
+                        if (node.typeArgs && node.typeArgs.length >= 2) valT = resolveTypeExpr(node.typeArgs[1], env);
+                        // still type-check constructor args loosely
+                        node.args.forEach(a => checkExpr(a, env));
+                        return { kind: "map", key: keyT, value: valT };
+                    }
+                    if (id === "Set") {
+                        let el = anyType();
+                        if (node.typeArgs && node.typeArgs.length >= 1) el = resolveTypeExpr(node.typeArgs[0], env);
+                        node.args.forEach(a => checkExpr(a, env));
+                        return { kind: "set", element: el };
+                    }
+                }
+
                 // evaluate callee type
                 const calleeType = checkExpr(node.callee, env);
                 // if class-style constructor
@@ -2483,6 +2553,16 @@ function typeCheck(ast, source) {
 
         // arrays: element-wise assignable
         if (from.kind === "array" && to.kind === "array") {
+            return isAssignable(from.element, to.element, visited);
+        }
+
+        // maps: key and value must be assignable
+        if (from.kind === "map" && to.kind === "map") {
+            return isAssignable(from.key, to.key, visited) && isAssignable(from.value, to.value, visited);
+        }
+
+        // sets: element-wise assignable
+        if (from.kind === "set" && to.kind === "set") {
             return isAssignable(from.element, to.element, visited);
         }
 
