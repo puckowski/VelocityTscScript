@@ -48,7 +48,7 @@ function tokenize(input) {
             continue;
         }
 
-        // String literals (" or ')
+        // String literals (" or ') and template literals (`...`)
         if (c === '"' || c === "'") {
             const quote = c;
             let start = i++;
@@ -78,6 +78,93 @@ function tokenize(input) {
             }
             i++; // skip closing quote
             tokens.push({ type: "string", value, pos: start });
+            continue;
+        }
+
+        // Template literals using backticks `...` with ${expr} interpolation
+        if (c === '`') {
+            const start = i;
+            i++; // skip opening `
+            let cur = "";
+            // parts will be interleaved: string, expressionTokens, string, ...
+            const parts = [];
+            while (i < input.length) {
+                if (input[i] === '`') {
+                    // push final string part
+                    if (cur.length > 0) parts.push({ type: 'string', value: cur, pos: start });
+                    i++; // skip closing `
+                    break;
+                }
+                if (input[i] === '\\') {
+                    // handle escapes inside template
+                    if (i + 1 >= input.length) break;
+                    const esc = input[i + 1];
+                    if (esc === 'n') cur += '\n';
+                    else if (esc === 'r') cur += '\r';
+                    else if (esc === 't') cur += '\t';
+                    else if (esc === '`') cur += '`';
+                    else if (esc === '$') cur += '$';
+                    else cur += esc;
+                    i += 2;
+                    continue;
+                }
+                if (input[i] === '$' && input[i + 1] === '{') {
+                    // push current string part
+                    parts.push({ type: 'string', value: cur, pos: start });
+                    cur = "";
+                    i += 2; // skip ${
+                    // capture expression until matching }
+                    let depth = 1;
+                    let exprStart = i;
+                    while (i < input.length && depth > 0) {
+                        if (input[i] === '{') depth++;
+                        else if (input[i] === '}') depth--;
+                        i++;
+                    }
+                    if (depth !== 0) throw new Error('Unterminated template expression starting at ' + exprStart);
+                    const exprText = input.slice(exprStart, i - 1);
+                    // tokenize the expression text recursively and store tokens
+                    const exprTokens = tokenize(exprText);
+                    parts.push({ type: 'expr', tokens: exprTokens, pos: exprStart });
+                    continue;
+                }
+                // regular char
+                cur += input[i++];
+            }
+
+            // If template consisted of simple single string (no expr parts), push as string
+            // Otherwise, convert parts into a sequence of tokens representing concatenation
+            const hasExpr = parts.some(p => p.type === 'expr');
+            if (!hasExpr) {
+                // simple template without interpolation
+                tokens.push({ type: 'string', value: parts.length > 0 ? parts[0].value : '', pos: start });
+                continue;
+            }
+
+            // Build concatenation token stream: (part0) + (expr0) + (part1) + ...
+            // We'll append tokens in order: for string parts produce string token; between adjacent parts insert + punct.
+            // To ensure expression parts parse correctly as a single operand, wrap expr tokens with parentheses.
+            let first = true;
+            for (let idx = 0; idx < parts.length; idx++) {
+                const p = parts[idx];
+                if (p.type === 'string') {
+                    if (p.value.length > 0) {
+                        if (!first) tokens.push({ type: 'punct', value: '+', pos: p.pos });
+                        tokens.push({ type: 'string', value: p.value, pos: p.pos });
+                        first = false;
+                    }
+                } else if (p.type === 'expr') {
+                    if (!first) tokens.push({ type: 'punct', value: '+', pos: p.pos });
+                    // push '(' then inner tokens then ')'
+                    tokens.push({ type: 'punct', value: '(', pos: p.pos });
+                    // append expr tokens
+                    for (const t of p.tokens) {
+                        tokens.push(t);
+                    }
+                    tokens.push({ type: 'punct', value: ')', pos: p.pos });
+                    first = false;
+                }
+            }
             continue;
         }
 

@@ -2,6 +2,10 @@
 
 For use in [Tryit-Code-Editor](https://github.com/puckowski/Tryit-Code-Editor)
 
+## Single file compilation
+
+VelocityTscScript is written for single file compilation and does not collect type information from other files.
+
 ## Syntax Support
 
 Does not support:
