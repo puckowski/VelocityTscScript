@@ -129,6 +129,7 @@ function tokenize(input) {
                 "catch",
                 "finally",
                 "class",
+                    "extends",
                 "new",
                 "async",
                 "await"
@@ -256,7 +257,8 @@ function FunctionExpr(name, typeParams, params, returnType, body, pos, isAsync =
 }
 // ClassDecl now holds both methods and fields (public instance fields)
 function FieldDecl(name, type, init, pos, isStatic = false) { return { kind: "FieldDecl", name, type, init, pos, isStatic }; }
-function ClassDecl(name, methods, fields, pos) { return { kind: "ClassDecl", name, methods, fields, pos }; }
+// ClassDecl now optionally holds a `superClass` name (string) when the class extends another
+function ClassDecl(name, methods, fields, pos, superClass = null) { return { kind: "ClassDecl", name, methods, fields, pos, superClass }; }
 function MethodDecl(name, params, body, pos, isConstructor, returnType = null, isStatic = false) { return { kind: "MethodDecl", name, params, body, pos, isConstructor, returnType, isStatic }; }
 function NewExpr(callee, args, pos) { return { kind: "NewExpr", callee, args, pos }; }
 
@@ -698,6 +700,13 @@ function parse(tokens) {
         const nameTok = consume("identifier");
         const methods = [];
         const fields = [];
+        // optional `extends` clause
+        let superName = null;
+        if (peek().type === "keyword" && peek().value === "extends") {
+            consume("keyword", "extends");
+            const sup = consume("identifier");
+            superName = sup.value;
+        }
         consume("punct", "{");
         while (!(peek().type === "punct" && peek().value === "}")) {
             // optional 'static' modifier for class methods
@@ -755,7 +764,7 @@ function parse(tokens) {
             }
         }
         consume("punct", "}");
-        return ClassDecl(nameTok.value, methods, fields, classTok.pos);
+        return ClassDecl(nameTok.value, methods, fields, classTok.pos, superName);
     }
 
     function parseTryStmt() {
@@ -1776,6 +1785,23 @@ function typeCheck(ast, source) {
                 const staticMethodsMap = new Map();
                 const instanceProps = new Map();
 
+                // If this class extends another, try to inherit static and instance members
+                if (node.superClass) {
+                    const superType = env.lookupValue(node.superClass);
+                    if (superType && superType.kind === "class") {
+                        // copy static methods from super
+                        for (const [k, v] of superType.methods.entries()) {
+                            staticMethodsMap.set(k, v);
+                        }
+                        // copy instance properties/methods from super
+                        if (superType.instance && superType.instance.properties) {
+                            for (const [k, v] of superType.instance.properties.entries()) {
+                                instanceProps.set(k, v);
+                            }
+                        }
+                    }
+                }
+
                 // instance type for `new Person(...)`
                 const instanceType = { kind: "object", properties: instanceProps };
 
@@ -1832,7 +1858,8 @@ function typeCheck(ast, source) {
                     name: node.name,
                     ctor: ctorType,
                     methods: staticMethodsMap,
-                    instance: instanceType
+                    instance: instanceType,
+                    super: node.superClass || null
                 };
 
                 // make the class available as a value and as a type (the type being
@@ -2595,7 +2622,8 @@ function emitJS(ast) {
                 }).join("\n\n");
 
                 const classBodyParts = [ctorStr, methodParts].filter(Boolean).join("\n\n");
-                let classCode = `class ${node.name} {\n${classBodyParts.replace(/^/gm, '  ')}\n}`;
+                const extendsPart = node.superClass ? ` extends ${node.superClass}` : "";
+                let classCode = `class ${node.name}${extendsPart} {\n${classBodyParts.replace(/^/gm, '  ')}\n}`;
 
                 // emit static field initializers after the class if present
                 if (staticInits.length > 0) {

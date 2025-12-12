@@ -326,6 +326,32 @@ const { a, b: c, ...rest } = obj;
         } catch (error) {
             console.error('Error during transpilation:', error);
         }
+
+
+                           const code5 = `
+export class Dog {
+  bark(): void {
+    console.log("Woof!");
+  }
+}
+
+export class Lab extends Dog {
+  fetch(): void {
+    console.log("Fetching...");
+  }
+}
+
+let foo = new Lab();
+foo.bark();
+
+`;
+
+     try {
+            const result = transpile(code5);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
     </script>
 </body>
 
