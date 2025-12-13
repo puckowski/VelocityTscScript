@@ -1,10 +1,16 @@
 {
+  "type": "module",
   "scripts": {
     "tsc": "tsc typescript\\index2.ts",
-    "minify": "node minify.js"
+    "minify": "node minify.js",
+    "test": "vitest"
   },
   "devDependencies": {
+    "jsdom": "^27.3.0",
     "terser": "^5.44.1",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "vitest": "^4.0.15"
   }
 }
