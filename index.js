@@ -1943,6 +1943,25 @@ function typeCheck(ast, source) {
                 } else {
                     checkBlock(node.body, fnEnv, fnType);
                 }
+
+                // After checking the body, ensure that if the function declares
+                // a non-void return type there is at least one return statement
+                // somewhere in the body. This is a conservative check: it only
+                // ensures presence of a return, not that all code paths return.
+                try {
+                    const declaredRet = returnType || anyType();
+                    if (declaredRet && declaredRet.kind !== "void") {
+                        if (!containsReturn(node.body)) {
+                            error(
+                                `Function '${node.name}' declared to return '${typeToString(declaredRet)}' but has no return statement`,
+                                node
+                            );
+                        }
+                    }
+                } catch (e) {
+                    // ignore helper errors
+                }
+
                 break;
             }
             case "Block":
@@ -2231,6 +2250,47 @@ function typeCheck(ast, source) {
         const blockEnv = new Env(env);
         for (const stmt of node.statements) {
             checkStatement(stmt, blockEnv, currentFunctionType);
+        }
+    }
+
+    // Helper: detect whether a node (usually a Block) contains any ReturnStmt
+    function containsReturn(node) {
+        if (!node) return false;
+        switch (node.kind) {
+            case "ReturnStmt":
+                return true;
+            case "Block":
+                for (const s of node.statements) {
+                    if (containsReturn(s)) return true;
+                }
+                return false;
+            case "IfStmt":
+                // if either branch contains a return, report true (conservative)
+                if (containsReturn(node.thenBlock)) return true;
+                if (node.elseBlock && containsReturn(node.elseBlock)) return true;
+                return false;
+            case "ForStmt":
+            case "ForOfStmt":
+            case "ForInStmt":
+            case "WhileStmt":
+            case "SwitchStmt":
+                // descend into body/cases
+                if (node.body && containsReturn(node.body)) return true;
+                if (node.kind === "SwitchStmt") {
+                    for (const c of node.cases) {
+                        for (const s of c.consequent) if (containsReturn(s)) return true;
+                    }
+                }
+                return false;
+            case "ExportDecl":
+                return containsReturn(node.decl);
+            case "FuncDecl":
+            case "FunctionExpr":
+            case "ArrowFunction":
+                // do not traverse into nested functions
+                return false;
+            default:
+                return false;
         }
     }
 
