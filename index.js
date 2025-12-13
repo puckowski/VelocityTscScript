@@ -2295,6 +2295,50 @@ function typeCheck(ast, source) {
     }
 
     function checkExpr(node, env) {
+    // Helper to merge two types into a common supertype for inference.
+    // Returns a type object or null if incompatible.
+    function mergeTypes(a, b) {
+        if (!a || !b) return null;
+        if (a.kind === "any" || b.kind === "any") return anyType();
+        // both literals
+        if (a.kind === "literal" && b.kind === "literal") {
+            if (a.literalKind === b.literalKind) {
+                if (a.value === b.value) return a;
+                return primitiveType(a.literalKind);
+            }
+            return null;
+        }
+        // one literal, one primitive of same kind: widen to primitive
+        if (a.kind === "literal" && b.kind === a.literalKind) return primitiveType(a.literalKind);
+        if (b.kind === "literal" && a.kind === b.literalKind) return primitiveType(b.literalKind);
+        // same kind
+        if (a.kind === b.kind) return a;
+        // union handling: if either is union, try to merge members
+        if (a.kind === "union") {
+            // require every member of a to be mergeable with b
+            const parts = [];
+            for (const m of a.types) {
+                const mm = mergeTypes(m, b);
+                if (!mm) return null;
+                parts.push(mm);
+            }
+            // simplify: if all parts identical, return first, else return any
+            if (parts.length > 0 && parts.every(p => JSON.stringify(p) === JSON.stringify(parts[0]))) return parts[0];
+            return anyType();
+        }
+        if (b.kind === "union") {
+            const parts = [];
+            for (const m of b.types) {
+                const mm = mergeTypes(a, m);
+                if (!mm) return null;
+                parts.push(mm);
+            }
+            if (parts.length > 0 && parts.every(p => JSON.stringify(p) === JSON.stringify(parts[0]))) return parts[0];
+            return anyType();
+        }
+        return null;
+    }
+
         switch (node.kind) {
             case "NumberLiteral":
                 return primitiveType("number");
@@ -2492,6 +2536,13 @@ function typeCheck(ast, source) {
                 if (t1.kind === "any" || t2.kind === "any") return anyType();
                 // if identical
                 if (JSON.stringify(t1) === JSON.stringify(t2)) return t1;
+                // If both branches are literal types of the same primitive kind
+                // (e.g. "adult" and "minor"), widen to the base primitive
+                // (string/number/boolean) so assignments to plain `string`/`number`
+                // succeed instead of producing an error.
+                if (t1.kind === "literal" && t2.kind === "literal" && t1.literalKind === t2.literalKind) {
+                    return primitiveType(t1.literalKind);
+                }
                 if (isAssignable(t1, t2)) return t2;
                 if (isAssignable(t2, t1)) return t1;
                 error(`Ternary branches have incompatible types: '${typeToString(t1)}' and '${typeToString(t2)}'`, node);
@@ -2772,17 +2823,23 @@ function typeCheck(ast, source) {
             case "ArrayLiteral": {
                 const elems = node.elements;
                 if (elems.length === 0) return { kind: "array", element: anyType() };
-                const first = checkExpr(elems[0], env);
+                let elemType = checkExpr(elems[0], env);
                 for (let i = 1; i < elems.length; i++) {
                     const t = checkExpr(elems[i], env);
-                    if (!isAssignable(t, first)) {
-                        error(
-                            `Array literal elements have incompatible types: '${typeToString(first)}' and '${typeToString(t)}'`,
-                            node
-                        );
+                    const merged = mergeTypes(elemType, t);
+                    if (!merged) {
+                        // fall back to strict assignability check to produce same error messages
+                        if (!isAssignable(t, elemType)) {
+                            error(
+                                `Array literal elements have incompatible types: '${typeToString(elemType)}' and '${typeToString(t)}'`,
+                                node
+                            );
+                        }
+                    } else {
+                        elemType = merged;
                     }
                 }
-                return { kind: "array", element: first };
+                return { kind: "array", element: elemType };
             }
             case "FunctionExpr": {
                 // If function expression has generic type params, make them available
