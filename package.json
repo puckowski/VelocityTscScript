@@ -2,7 +2,7 @@
   "type": "module",
   "scripts": {
     "tsc": "tsc typescript\\index2.ts",
-    "minify": "node minify.js",
+    "minify": "node minify.cjs",
     "test": "vitest"
   },
   "devDependencies": {
