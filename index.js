@@ -407,7 +407,7 @@ function parse(tokens) {
                 consume("punct", "|");
                 types.push(parseIntersectionType());
             }
-            return UnionType(types, first.pos || (peek(-1) ? peek(-1).pos : 0));
+            return UnionType(types, first.pos);
         }
 
         return first;
@@ -421,7 +421,7 @@ function parse(tokens) {
                 consume("punct", "&");
                 types.push(parseTypePrimary());
             }
-            return IntersectionType(types, first.pos || (peek(-1) ? peek(-1).pos : 0));
+            return IntersectionType(types, first.pos);
         }
         return first;
     }
@@ -1700,6 +1700,68 @@ function typeCheck(ast, source) {
         });
     }
 
+    function getIntersectionPropertyType(objType, propertyName) {
+        if (!objType || objType.kind !== "intersection") return null;
+        const matches = [];
+        for (const t of objType.types) {
+            if (t.kind === "object") {
+                const prop = t.properties.get(propertyName);
+                if (prop) matches.push(prop);
+            }
+        }
+        if (matches.length === 0) return null;
+        if (matches.length === 1) return matches[0];
+        const [first, ...rest] = matches;
+        let current = first;
+        for (const next of rest) {
+            if (isAssignable(next, current)) {
+                current = next;
+            } else if (isAssignable(current, next)) {
+                // keep current
+            } else {
+                return { kind: "intersection", types: [current, next] };
+            }
+        }
+        return current;
+    }
+
+    function getObjectPropertyMap(t) {
+        if (!t) return null;
+        if (t.kind === "object") return t.properties;
+        if (t.kind === "intersection") {
+            const props = new Map();
+            for (const part of t.types) {
+                if (part.kind === "object") {
+                    for (const name of part.properties.keys()) {
+                        const propType = getIntersectionPropertyType(t, name);
+                        if (propType) props.set(name, propType);
+                    }
+                }
+            }
+            return props;
+        }
+        return null;
+    }
+
+    function extractStringKeys(t) {
+        if (!t) return null;
+        if (t.kind === "literal" && t.literalKind === "string") {
+            return new Set([t.value]);
+        }
+        if (t.kind === "union") {
+            const keys = new Set();
+            for (const part of t.types) {
+                const partKeys = extractStringKeys(part);
+                if (!partKeys) return null;
+                for (const k of partKeys) keys.add(k);
+            }
+            return keys;
+        }
+        if (t.kind === "string") return "__all__";
+        if (t.kind === "any") return "__all__";
+        return null;
+    }
+
     function resolveTypeExpr(node, env) {
         switch (node.kind) {
             case "TypeRef": {
@@ -1717,6 +1779,49 @@ function typeCheck(ast, source) {
                     let el = anyType();
                     if (node.typeArgs && node.typeArgs.length >= 1) el = resolveTypeExpr(node.typeArgs[0], env);
                     return { kind: "set", element: el };
+                }
+
+                // Pick<T, K> and Omit<T, K>
+                if (node.name === "Pick" || node.name === "Omit") {
+                    if (!node.typeArgs || node.typeArgs.length < 2) {
+                        error(`Type '${node.name}' requires two type arguments`, node);
+                        return anyType();
+                    }
+                    const targetType = resolveTypeExpr(node.typeArgs[0], env);
+                    const keysType = resolveTypeExpr(node.typeArgs[1], env);
+                    const props = getObjectPropertyMap(targetType);
+                    if (!props) {
+                        error(`Type '${node.name}' can only be applied to object types`, node);
+                        return anyType();
+                    }
+
+                    const keys = extractStringKeys(keysType);
+                    if (keys === "__all__") {
+                        if (node.name === "Pick") return targetType;
+                        return { kind: "object", properties: new Map() };
+                    }
+                    if (!keys) {
+                        error(`Type '${node.name}' keys must be a string literal or union of string literals`, node);
+                        return anyType();
+                    }
+
+                    const nextProps = new Map();
+                    if (node.name === "Pick") {
+                        for (const k of keys) {
+                            const propType = props.get(k);
+                            if (!propType) {
+                                error(`Property '${k}' does not exist on type '${typeToString(targetType)}'`, node);
+                                continue;
+                            }
+                            nextProps.set(k, propType);
+                        }
+                    } else {
+                        for (const [name, propType] of props.entries()) {
+                            if (!keys.has(name)) nextProps.set(name, propType);
+                        }
+                    }
+
+                    return { kind: "object", properties: nextProps };
                 }
 
                 const prim = primitiveType(node.name);
@@ -2353,31 +2458,6 @@ function typeCheck(ast, source) {
         return null;
     }
 
-    function getIntersectionPropertyType(objType, propertyName) {
-        if (!objType || objType.kind !== "intersection") return null;
-        const matches = [];
-        for (const t of objType.types) {
-            if (t.kind === "object") {
-                const prop = t.properties.get(propertyName);
-                if (prop) matches.push(prop);
-            }
-        }
-        if (matches.length === 0) return null;
-        if (matches.length === 1) return matches[0];
-        // If multiple definitions exist, prefer a narrower type when possible
-        const [first, ...rest] = matches;
-        let current = first;
-        for (const next of rest) {
-            if (isAssignable(next, current)) {
-                current = next;
-            } else if (isAssignable(current, next)) {
-                // keep current
-            } else {
-                return { kind: "intersection", types: [current, next] };
-            }
-        }
-        return current;
-    }
 
         switch (node.kind) {
             case "NumberLiteral":

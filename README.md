@@ -22,4 +22,4 @@ Does not support:
 - Enhanced object literals
 - Generators
 - Improved union types
-- Pick/Omit
+- Improved Pick/Omit
