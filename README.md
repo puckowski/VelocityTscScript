@@ -15,3 +15,11 @@ Does not support:
 - Destructuring
 - enum
 - Generic classes or generic class functions
+
+## To-do
+
+- Getters and setters
+- Enhanced object literals
+- Generators
+- Improved union types
+- Pick/Omit

@@ -587,6 +587,22 @@ let n: number = num();
         } catch (error) {
             console.error('Error during transpilation:', error);
         }
+
+
+                                                               const code16 = `
+type foo = number | string;
+let foo2: foo = 1;
+foo2 = 2;
+foo2 = 's';
+foo2 = false;
+`;
+
+     try {
+            const result = transpile(code16);
+            console.log('Transpiled JavaScript Code:\n', result);
+        } catch (error) {
+            console.error('Error during transpilation:', error);
+        }
     </script>
 </body>
 
