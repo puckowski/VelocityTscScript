@@ -254,7 +254,7 @@ function tokenize(input) {
             "+", "-", "*", "/", "=",
             ",", ":", ".", "<", ">",
             "[", "]",
-            "?", "|"
+            "?", "|", "&"
         ];
         if (singleChars.includes(c)) {
             tokens.push({ type: "punct", value: c, pos: i });
@@ -305,6 +305,7 @@ function ObjectType(properties, pos) { return { kind: "ObjectType", properties, 
 function TypeProperty(name, type, pos) { return { kind: "TypeProperty", name, type, pos }; }
 function ArrayType(element, pos) { return { kind: "ArrayType", element, pos }; }
 function UnionType(types, pos) { return { kind: "UnionType", types, pos }; }
+function IntersectionType(types, pos) { return { kind: "IntersectionType", types, pos }; }
 // Type-level string literal (e.g.  "idle" in a type expression)
 function TypeLiteral(value, pos) { return { kind: "TypeLiteral", value, pos }; }
 // Function type at the type-expression level: (params) => returnType
@@ -397,11 +398,39 @@ function parse(tokens) {
 
     // ---- Type parsing ----
     function parseTypeExpr() {
+        // union has lower precedence than intersection
+        const first = parseIntersectionType();
+
+        if (peek().type === "punct" && peek().value === "|") {
+            const types = [first];
+            while (peek().type === "punct" && peek().value === "|") {
+                consume("punct", "|");
+                types.push(parseIntersectionType());
+            }
+            return UnionType(types, first.pos || (peek(-1) ? peek(-1).pos : 0));
+        }
+
+        return first;
+    }
+
+    function parseIntersectionType() {
+        const first = parseTypePrimary();
+        if (peek().type === "punct" && peek().value === "&") {
+            const types = [first];
+            while (peek().type === "punct" && peek().value === "&") {
+                consume("punct", "&");
+                types.push(parseTypePrimary());
+            }
+            return IntersectionType(types, first.pos || (peek(-1) ? peek(-1).pos : 0));
+        }
+        return first;
+    }
+
+    function parseTypePrimary() {
         // parse a primary type (object type or simple ref/array/generic)
         const tok = peek();
-        let first;
         if (tok.type === "punct" && tok.value === "{") {
-            first = parseObjectType();
+            return parseObjectType();
         } else if (tok.type === "punct" && tok.value === "(") {
             // possible function type: (params) => ReturnType
             // We'll parse a parameter list and require a following '=>'
@@ -425,37 +454,15 @@ function parse(tokens) {
             if (peek().type === "punct" && peek().value === "=>") {
                 consume("punct", "=>");
                 const retType = parseTypeExpr();
-                first = TypeFunction(params, retType, startPos);
-            } else {
-                throw new Error("Unexpected '(' in type expression: expected function type '(... ) => ...'");
+                return TypeFunction(params, retType, startPos);
             }
+            throw new Error("Unexpected '(' in type expression: expected function type '(... ) => ...'");
         } else if (tok.type === "string") {
             // Type-level string literal, e.g. type Status = "idle" | "loading";
             const s = consume("string");
-            first = TypeLiteral(s.value, s.pos);
-        } else {
-            first = parseSimpleTypeRef();
+            return TypeLiteral(s.value, s.pos);
         }
-
-        // support union types: T | U | V
-        if (peek().type === "punct" && peek().value === "|") {
-            const types = [first];
-            while (peek().type === "punct" && peek().value === "|") {
-                consume("punct", "|");
-                const nextTok = peek();
-                    if (nextTok.type === "punct" && nextTok.value === "{") {
-                        types.push(parseObjectType());
-                    } else if (nextTok.type === "string") {
-                        const s = consume("string");
-                        types.push(TypeLiteral(s.value, s.pos));
-                    } else {
-                        types.push(parseSimpleTypeRef());
-                    }
-            }
-            return UnionType(types, tok.pos);
-        }
-
-        return first;
+        return parseSimpleTypeRef();
     }
 
     function parseSimpleTypeRef() {
@@ -1601,6 +1608,9 @@ function typeToString(t) {
         if (t.kind === "union") {
             return t.types.map(p => _typeToString(p, visited)).join(" | ");
         }
+        if (t.kind === "intersection") {
+            return t.types.map(p => _typeToString(p, visited)).join(" & ");
+        }
         if (t.kind === "literal") {
             // represent string literal types with quotes
             if (t.literalKind === "string") return `"${t.value}"`;
@@ -1759,6 +1769,10 @@ function typeCheck(ast, source) {
             case "UnionType": {
                 const parts = node.types.map(tn => resolveTypeExpr(tn, env));
                 return { kind: "union", types: parts };
+            }
+            case "IntersectionType": {
+                const parts = node.types.map(tn => resolveTypeExpr(tn, env));
+                return { kind: "intersection", types: parts };
             }
             case "ArrayType": {
                 const el = resolveTypeExpr(node.element, env);
@@ -2339,6 +2353,32 @@ function typeCheck(ast, source) {
         return null;
     }
 
+    function getIntersectionPropertyType(objType, propertyName) {
+        if (!objType || objType.kind !== "intersection") return null;
+        const matches = [];
+        for (const t of objType.types) {
+            if (t.kind === "object") {
+                const prop = t.properties.get(propertyName);
+                if (prop) matches.push(prop);
+            }
+        }
+        if (matches.length === 0) return null;
+        if (matches.length === 1) return matches[0];
+        // If multiple definitions exist, prefer a narrower type when possible
+        const [first, ...rest] = matches;
+        let current = first;
+        for (const next of rest) {
+            if (isAssignable(next, current)) {
+                current = next;
+            } else if (isAssignable(current, next)) {
+                // keep current
+            } else {
+                return { kind: "intersection", types: [current, next] };
+            }
+        }
+        return current;
+    }
+
         switch (node.kind) {
             case "NumberLiteral":
                 return primitiveType("number");
@@ -2389,7 +2429,7 @@ function typeCheck(ast, source) {
                         }
                     } else if (node.left.kind === "MemberExpr") {
                         const objType = checkExpr(node.left.object, env);
-                        if (!objType || (objType.kind !== "object" && objType.kind !== "array" && objType.kind !== "any")) {
+                        if (!objType || (objType.kind !== "object" && objType.kind !== "array" && objType.kind !== "any" && objType.kind !== "intersection")) {
                             error(
                                 `Property access '${node.left.property}' on non-object type '${typeToString(objType)}'`,
                                 node.left
@@ -2397,6 +2437,15 @@ function typeCheck(ast, source) {
                             leftType = anyType();
                         } else if (objType.kind === "object") {
                             leftType = objType.properties.get(node.left.property);
+                            if (!leftType) {
+                                error(
+                                    `Property '${node.left.property}' does not exist on type '${typeToString(objType)}'`,
+                                    node.left
+                                );
+                                leftType = anyType();
+                            }
+                        } else if (objType.kind === "intersection") {
+                            leftType = getIntersectionPropertyType(objType, node.left.property);
                             if (!leftType) {
                                 error(
                                     `Property '${node.left.property}' does not exist on type '${typeToString(objType)}'`,
@@ -2727,6 +2776,19 @@ function typeCheck(ast, source) {
                     return propType;
                 }
 
+                // Intersection object types: property must exist in at least one member
+                if (objType.kind === "intersection") {
+                    const propType = getIntersectionPropertyType(objType, node.property);
+                    if (!propType) {
+                        error(
+                            `Property '${node.property}' does not exist on type '${typeToString(objType)}'`,
+                            node
+                        );
+                        return anyType();
+                    }
+                    return propType;
+                }
+
                 // Primitives / everything else:
                 // (number, string, boolean, function, class, etc.)
                 // Treat property as `any` so built-ins like toString, trim, toFixed
@@ -2920,6 +2982,22 @@ function typeCheck(ast, source) {
                     if (!isAssignable(m, to, visited)) return false;
                 }
                 return true;
+            }
+
+            // handle intersection target: require `from` assignable to every member
+            if (to.kind === "intersection") {
+                for (const m of to.types) {
+                    if (!isAssignable(from, m, visited)) return false;
+                }
+                return true;
+            }
+
+            // handle intersection source: allow if any member is assignable to `to`
+            if (from.kind === "intersection") {
+                for (const m of from.types) {
+                    if (isAssignable(m, to, visited)) return true;
+                }
+                return false;
             }
 
         // short-circuit for primitives and literal values
